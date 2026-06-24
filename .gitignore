@@ -1,0 +1,16 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Environment secrets
+.env
+*.key
+
+# Data and logs
+status.json
+*.log
+.DS_Store
+
+# Virtual environments
+venv/
+env/
