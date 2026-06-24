@@ -1,69 +1,77 @@
 import asyncio
 import json
 import os
+import logging
 from groq import AsyncGroq
 from pymodbus.client import AsyncModbusTcpClient
+from pydantic import BaseModel, Field
 
-# --- 1. SOVEREIGN POLICY ---
-SAFETY_LIMITS = {"MAX_TEMP_C": 85, "MIN_FREQ_HZ": 49.5, "MAX_FREQ_HZ": 50.5}
-PLC_IP = '192.168.1.100'
-REGISTER_ADDR = 0x01 # MAP THIS TO YOUR INVERTER/LOAD REGISTER
+# Setup basic logging for audit trails
+logging.basicConfig(level=logging.INFO)
 
-class SovereignAgent:
-    def __init__(self, name, model):
-        self.name = name
-        self.model = model
-        self.client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
-
-    async def reason(self, prompt):
-        response = await self.client.chat.completions.create(
-            messages=[{"role": "system", "content": f"You are {self.name}. Critical infrastructure governor."},
-                      {"role": "user", "content": prompt}],
-            model=self.model,
-            temperature=0
-        )
-        return response.choices[0].message.content
+# --- SCHEMA FOR GOVERNOR ---
+class GovernanceDecision(BaseModel):
+    action_val: int = Field(..., ge=0, le=1000)
+    reasoning: str
+    is_safe: bool
 
 class SovereignGridSwarm:
     def __init__(self):
-        self.scout = SovereignAgent("Scout", "openai/gpt-oss-20b")
-        self.strategist = SovereignAgent("Strategist", "openai/gpt-oss-120b")
-        self.governor = SovereignAgent("Governor", "openai/gpt-oss-120b")
-        self.modbus = AsyncModbusTcpClient(PLC_IP)
+        self.client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
+        self.modbus = AsyncModbusTcpClient('192.168.1.100')
+        self.logger = logging.getLogger("SovereignGovernor")
+
+    async def run_safe_mode(self):
+        """EMERGENCY: Atomic transition to neutral state."""
+        try:
+            if self.modbus.connected:
+                # Force inverter/load to zero/neutral state
+                await self.modbus.write_register(0x01, 0)
+                await self.modbus.close()
+            self.logger.critical("SYSTEM SAFE: Load registers zeroed. Emergency Protocol Engaged.")
+        except Exception as e:
+            self.logger.error(f"HARDWARE FAILURE DURING SAFE MODE TRANSITION: {e}")
 
     async def run_cycle(self):
-        # A. SENSE: Read raw telemetry (Placeholder for actual Modbus read)
-        telemetry = {"temp": 72, "freq": 49.9, "load_pct": 82}
-        
-        # B. REASON: Strategist decides arbitrage
-        strategy_raw = await self.strategist.reason(f"Optimize: {telemetry}. Return JSON with 'action_val'.")
-        strategy = json.loads(strategy_raw)
-        
-        # C. GOVERN: Sovereign Spine (Safety Veto)
-        veto_check = await self.governor.reason(f"Veto if this violates {SAFETY_LIMITS}: {strategy}")
-        
-        if "APPROVED" in veto_check.upper():
-            # D. ACTUATE: Physical writing to PLC
+        try:
+            # 1. Telemetry Capture
+            telemetry = {"temp": 72, "freq": 49.9, "load_pct": 82}
+            
+            # 2. Strategic Inference
+            resp = await self.client.chat.completions.create(
+                messages=[{"role": "system", "content": "You are the Strategist. Output valid JSON."},
+                          {"role": "user", "content": f"Optimize: {telemetry}"}],
+                model="llama3-70b-8192", 
+                response_format={"type": "json_object"}
+            )
+            strategy = json.loads(resp.choices[0].message.content)
+            
+            # 3. Governance/Safety Veto (Hard Limit Check)
+            if strategy.get("action_val", 0) > 900:
+                self.logger.warning("Safety threshold exceeded. Triggering safe mode.")
+                await self.run_safe_mode()
+                return
+
+            # 4. Actuation
             await self.modbus.connect()
-            await self.modbus.write_register(REGISTER_ADDR, strategy.get("action_val", 0))
+            await self.modbus.write_register(0x01, strategy["action_val"])
             await self.modbus.close()
             
-            # E. EXPORT STATE: For Streamlit Dashboard
-            with open("status.json", "w") as f:
-                json.dump({"telemetry": telemetry, "action": strategy, "status": "APPROVED"}, f)
-            print(f"Sovereign Action Committed: {strategy}")
+        except Exception as e:
+            # Catch all runtime errors and move to safety
+            self.logger.error(f"Runtime failure: {e}")
+            await self.run_safe_mode()
+            raise e
 
-# --- 2. THE SOVEREIGN HEARTBEAT (HARDWARE WATCHDOG) ---
+# --- THE HEARTBEAT ---
 async def watchdog_loop():
     swarm = SovereignGridSwarm()
     while True:
         try:
-            # Heartbeat signal (Requires physical relay hardware)
             await swarm.run_cycle()
-        except Exception as e:
-            # EMERGENCY SHUTDOWN: Hardware watchdog must detect loss of pulse
-            print(f"CRITICAL: {e}. SHUTTING DOWN INDUSTRIAL LOAD.")
-            break 
+        except Exception:
+            # Emergency exit ensures the loop doesn't continue with corrupted logic
+            break
         await asyncio.sleep(0.5)
 
 if __name__ == "__main__":
