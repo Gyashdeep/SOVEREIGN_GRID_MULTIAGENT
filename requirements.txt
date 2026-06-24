@@ -1,0 +1,6 @@
+asyncio
+groq
+pymodbus
+streamlit
+pandas
+# Note: Add 'RPi.GPIO' if you are deploying to an actual Raspberry Pi
