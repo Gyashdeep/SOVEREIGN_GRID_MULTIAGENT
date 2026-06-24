@@ -1,70 +1,75 @@
 import asyncio
 import json
-import os
+import random
+import logging
 from groq import AsyncGroq
-from pymodbus.client import AsyncModbusTcpClient
+from pydantic import BaseModel, Field
 
-# --- 1. SOVEREIGN POLICY ---
-SAFETY_LIMITS = {"MAX_TEMP_C": 85, "MIN_FREQ_HZ": 49.5, "MAX_FREQ_HZ": 50.5}
-PLC_IP = '192.168.1.100'
-REGISTER_ADDR = 0x01 # MAP THIS TO YOUR INVERTER/LOAD REGISTER
+# --- CONFIGURATION ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("SovereignSimulation")
 
-class SovereignAgent:
-    def __init__(self, name, model):
-        self.name = name
-        self.model = model
-        self.client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
+# --- MOCK HARDWARE LAYER ---
+class MockModbus:
+    """Simulates physical PLC registers for testing."""
+    def __init__(self): self.connected = True
+    async def connect(self): pass
+    async def close(self): pass
+    async def write_register(self, addr, val):
+        logger.info(f"[ACTUATOR] Physical Register {addr} set to: {val}")
 
-    async def reason(self, prompt):
-        response = await self.client.chat.completions.create(
-            messages=[{"role": "system", "content": f"You are {self.name}. Critical infrastructure governor."},
-                      {"role": "user", "content": prompt}],
-            model=self.model,
-            temperature=0
-        )
-        return response.choices[0].message.content
+# --- GOVERNANCE SCHEMA ---
+class GovernanceDecision(BaseModel):
+    action_val: int = Field(..., ge=0, le=1000)
+    reasoning: str
+    is_safe: bool
 
+# --- CORE SIMULATION ENGINE ---
 class SovereignGridSwarm:
-    def __init__(self):
-        self.scout = SovereignAgent("Scout", "openai/gpt-oss-20b")
-        self.strategist = SovereignAgent("Strategist", "openai/gpt-oss-120b")
-        self.governor = SovereignAgent("Governor", "openai/gpt-oss-120b")
-        self.modbus = AsyncModbusTcpClient(PLC_IP)
+    def __init__(self):
+        self.client = AsyncGroq(api_key="YOUR_GROQ_API_KEY")
+        self.modbus = MockModbus()
 
-    async def run_cycle(self):
-        # A. SENSE: Read raw telemetry (Placeholder for actual Modbus read)
-        telemetry = {"temp": 72, "freq": 49.9, "load_pct": 82}
-        
-        # B. REASON: Strategist decides arbitrage
-        strategy_raw = await self.strategist.reason(f"Optimize: {telemetry}. Return JSON with 'action_val'.")
-        strategy = json.loads(strategy_raw)
-        
-        # C. GOVERN: Sovereign Spine (Safety Veto)
-        veto_check = await self.governor.reason(f"Veto if this violates {SAFETY_LIMITS}: {strategy}")
-        
-        if "APPROVED" in veto_check.upper():
-            # D. ACTUATE: Physical writing to PLC
-            await self.modbus.connect()
-            await self.modbus.write_register(REGISTER_ADDR, strategy.get("action_val", 0))
-            await self.modbus.close()
-            
-            # E. EXPORT STATE: For Streamlit Dashboard
-            with open("status.json", "w") as f:
-                json.dump({"telemetry": telemetry, "action": strategy, "status": "APPROVED"}, f)
-            print(f"Sovereign Action Committed: {strategy}")
+    async def get_simulated_telemetry(self):
+        """Generates realistic grid fluctuations."""
+        return {
+            "temp": random.uniform(60, 90),
+            "freq": random.uniform(49.0, 51.0),
+            "load_pct": random.uniform(50, 95)
+        }
 
-# --- 2. THE SOVEREIGN HEARTBEAT (HARDWARE WATCHDOG) ---
+    async def run_cycle(self):
+        telemetry = await self.get_simulated_telemetry()
+        
+        # 1. Strategic Inference
+        resp = await self.client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "You are the Strategist. Respond ONLY in JSON."},
+                {"role": "user", "content": f"Optimize for grid: {telemetry}"}
+            ],
+            model="llama3-70b-8192",
+            response_format={"type": "json_object"}
+        )
+        strategy = json.loads(resp.choices[0].message.content)
+        
+        # 2. Safety Veto (The Governor)
+        action_val = strategy.get("action_val", 0)
+        if action_val > 900 or telemetry["temp"] > 85:
+            logger.warning("VETO: Safety limits exceeded. Reverting to Zero.")
+            await self.modbus.write_register(0x01, 0)
+        else:
+            await self.modbus.write_register(0x01, action_val)
+
+# --- THE HEARTBEAT ---
 async def watchdog_loop():
-    swarm = SovereignGridSwarm()
-    while True:
-        try:
-            # Heartbeat signal (Requires physical relay hardware)
-            await swarm.run_cycle()
-        except Exception as e:
-            # EMERGENCY SHUTDOWN: Hardware watchdog must detect loss of pulse
-            print(f"CRITICAL: {e}. SHUTTING DOWN INDUSTRIAL LOAD.")
-            break 
-        await asyncio.sleep(0.5)
+    swarm = SovereignGridSwarm()
+    logger.info("SovereignGridSwarm: Simulation ONLINE.")
+    while True:
+        try:
+            await swarm.run_cycle()
+        except Exception as e:
+            logger.error(f"Cycle Failure: {e}")
+        await asyncio.sleep(0.5)
 
 if __name__ == "__main__":
-    asyncio.run(watchdog_loop())
+    asyncio.run(watchdog_loop())
