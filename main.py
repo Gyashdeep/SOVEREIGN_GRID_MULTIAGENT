@@ -1,10 +1,9 @@
-import os
-import uvicorn
 import asyncio
+import os
+import random
 from typing import Annotated, TypedDict, List
 from operator import add
 from fastapi import FastAPI
-from pydantic import BaseModel
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg_pool import ConnectionPool
@@ -19,17 +18,14 @@ class GridState(TypedDict):
     status: str
 
 # 2. Physics Kernel
-def physics_governor(proposed_load: float) -> bool:
-    return 100.0 <= proposed_load <= 1000.0
+def physics_governor(load: float) -> bool:
+    return 100.0 <= load <= 1000.0
 
-# 3. Agent Nodes
-def optimizer_agent(state: GridState):
-    llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
-    # In production, pull real-time sensor data here
-    return {"proposed_load": 450.0, "status": "optimized_request"}
-
-def adversary_node(state: GridState):
-    return {"proposed_load": 5000.0, "status": "adversarial_attack"}
+# 3. Nodes
+def optimizer_node(state: GridState):
+    # Simulate dynamic load requests
+    load = random.randint(300, 1200) 
+    return {"proposed_load": load, "status": "request_in_progress"}
 
 def governor_node(state: GridState):
     is_safe = physics_governor(state["proposed_load"])
@@ -42,33 +38,31 @@ checkpointer = PostgresSaver(pool)
 checkpointer.setup()
 
 workflow = StateGraph(GridState)
-workflow.add_node("optimizer", optimizer_agent)
-workflow.add_node("adversary", adversary_node)
+workflow.add_node("optimizer", optimizer_node)
 workflow.add_node("governor", governor_node)
 workflow.set_entry_point("optimizer")
 workflow.add_edge("optimizer", "governor")
-workflow.add_edge("adversary", "governor")
 workflow.add_edge("governor", END)
-app_graph = workflow.compile(checkpointer=checkpointer)
-async def control_cycle():
-    thread_id = "industrial_grid_001"
-    while True:
-        # This constant cycle ensures the system is always 'moving'
-        app_graph.invoke({"messages": [HumanMessage(content="Orchestrate")]}, 
-                         config={"configurable": {"thread_id": thread_id}})
-        await asyncio.sleep(2) # Grid monitoring frequency (2 seconds)
 
-# 6. Production API
-api = FastAPI(title="CORE-ISOLATE Control Plane")
+app = workflow.compile(checkpointer=checkpointer)
+
+# 5. Continuous Async Control Loop
+async def run_continuous_grid():
+    thread_id = "grid_stream_001"
+    print("CORE-ISOLATE: Engine Started")
+    while True:
+        # Stream the execution to observe the 'movement'
+        async for event in app.astream(
+            {"messages": [HumanMessage(content="Next cycle")]},
+            config={"configurable": {"thread_id": thread_id}}
+        ):
+            for node, values in event.items():
+                print(f"Cycle Update | Node: {node} | Data: {values}")
+        
+        await asyncio.sleep(2) # Pulse rate: 2 seconds
+
+api = FastAPI()
 
 @api.on_event("startup")
-async def startup_event():
-    asyncio.create_task(control_cycle())
-
-@api.get("/status/{thread_id}")
-async def get_status(thread_id: str):
-    state = checkpointer.get_tuple({"configurable": {"thread_id": thread_id}})
-    return {"snapshot": state.snapshot if state else "No active session"}
-
-if __name__ == "__main__":
-    uvicorn.run(api, host="0.0.0.0", port=8000)
+async def startup():
+    asyncio.create_task(run_continuous_grid())
