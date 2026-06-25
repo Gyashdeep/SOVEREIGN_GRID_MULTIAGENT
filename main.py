@@ -50,8 +50,6 @@ workflow.add_edge("optimizer", "governor")
 workflow.add_edge("adversary", "governor")
 workflow.add_edge("governor", END)
 app_graph = workflow.compile(checkpointer=checkpointer)
-
-# 5. Background Control Loop (The "Heartbeat")
 async def control_cycle():
     thread_id = "industrial_grid_001"
     while True:
@@ -61,7 +59,7 @@ async def control_cycle():
         await asyncio.sleep(2) # Grid monitoring frequency (2 seconds)
 
 # 6. Production API
-api = FastAPI(title="AETHER-GOV Control Plane")
+api = FastAPI(title="CORE-ISOLATE Control Plane")
 
 @api.on_event("startup")
 async def startup_event():
